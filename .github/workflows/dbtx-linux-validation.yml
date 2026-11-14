@@ -1,0 +1,66 @@
+name: Temporary Linux validation
+
+on:
+  push:
+    branches:
+      - codex/dbtx-linux-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GODEBUG: http2client=0
+
+jobs:
+  make-all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out validation branch
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install lint prerequisites
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          cargo install typos-cli --version 1.40.0 --locked
+      - name: Record environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/linux-validation"
+          git rev-parse HEAD > "$RUNNER_TEMP/linux-validation/commit.txt"
+          go version > "$RUNNER_TEMP/linux-validation/go-version.txt"
+          go env GOTOOLCHAIN >> "$RUNNER_TEMP/linux-validation/go-version.txt"
+      - name: Run make all
+        shell: bash
+        run: |
+          set +e
+          env -i PATH="$PATH" HOME="$HOME" USER="$USER" TMPDIR="${TMPDIR:-/tmp}" GODEBUG="$GODEBUG" CI=true GITHUB_ACTIONS=true make all 2>&1 | tee "$RUNNER_TEMP/linux-validation/make-all.log"
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > "$RUNNER_TEMP/linux-validation/make-all.exit-status"
+          exit "$status"
+      - name: Record checkout changes
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/linux-validation"
+          git status --short > "$RUNNER_TEMP/linux-validation/status-after.txt"
+          git diff --stat > "$RUNNER_TEMP/linux-validation/formatting-changes.txt"
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: linux-make-all-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/linux-validation/
+          if-no-files-found: error
+          retention-days: 14
